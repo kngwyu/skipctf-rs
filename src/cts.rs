@@ -77,7 +77,7 @@ impl<S: Symbol> Esitimator<S> {
             total_count: count_init,
         }
     }
-    fn prob(&self, symbol: S, info: &UpdateInfo) -> f64 {
+    fn _prob(&self, symbol: S, info: &UpdateInfo) -> f64 {
         let count = self
             .counts
             .get(&symbol)
@@ -189,13 +189,13 @@ impl<S: Symbol> Node<S> {
             );
         }
     }
-    fn log_prob(&self, context: &[S], symbol: S, info: &UpdateInfo) -> f64 {
-        let lp_estimator = log(self.estimator.prob(symbol, info));
+    fn _log_prob(&self, context: &[S], symbol: S, info: &UpdateInfo) -> f64 {
+        let lp_estimator = log(self.estimator._prob(symbol, info));
         if let Some((_last, rest)) = context.split_last() {
             let lp_child = self
                 .children
                 .get(&symbol)
-                .map(|c| c.log_prob(&rest, symbol, info))
+                .map(|c| c._log_prob(&rest, symbol, info))
                 .unwrap_or(0.0);
             self.mix_prediction(lp_estimator, lp_child)
         } else {
@@ -266,9 +266,9 @@ impl<S: Symbol> Cts<S> {
         }
         Ok(self.root.update(context, symbol, &UpdateInfo::new(self)))
     }
-    fn log_prob(&self, context: &[S], symbol: S) -> Result<f64, CtsError> {
+    fn _log_prob(&self, context: &[S], symbol: S) -> Result<f64, CtsError> {
         self.check_context(context)?;
-        Ok(self.root.log_prob(context, symbol, &UpdateInfo::new(self)))
+        Ok(self.root._log_prob(context, symbol, &UpdateInfo::new(self)))
     }
     pub fn sample(&self, context: &[S]) -> Result<S, CtsError> {
         if self.time == 0.0 {
