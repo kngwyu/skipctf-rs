@@ -66,29 +66,30 @@ impl<T: Copy + Eq + std::hash::Hash> Symbol for T {}
 
 #[derive(Debug)]
 struct Esitimator<S: Symbol> {
-    counts: HashMap<S, u32>,
-    total_count: u32,
-}
-
-impl<S: Symbol> Default for Esitimator<S> {
-    fn default() -> Self {
-        Self {
-            counts: HashMap::new(),
-            total_count: 0,
-        }
-    }
+    counts: HashMap<S, f64>,
+    total_count: f64,
 }
 
 impl<S: Symbol> Esitimator<S> {
-    fn prob(&self, symbol: S) -> f64 {
-        let count = self.counts.get(&symbol).map(|x| *x).unwrap_or(0);
-        f64::from(count) / f64::from(self.total_count)
+    fn new(count_init: f64) -> Self {
+        Self {
+            counts: HashMap::new(),
+            total_count: count_init,
+        }
     }
-    fn update(&mut self, symbol: S) -> f64 {
-        let counter = self.counts.entry(symbol).or_insert(0);
-        let res = f64::from(*counter) / f64::from(self.total_count);
-        *counter += 1;
-        self.total_count += 1;
+    fn prob(&self, symbol: S, info: &UpdateInfo) -> f64 {
+        let count = self
+            .counts
+            .get(&symbol)
+            .map(|x| *x)
+            .unwrap_or(info.symbol_prior);
+        count / self.total_count
+    }
+    fn update(&mut self, symbol: S, info: &UpdateInfo) -> f64 {
+        let counter = self.counts.entry(symbol).or_insert(info.symbol_prior);
+        let res = *counter / self.total_count;
+        *counter += 1.0;
+        self.total_count += 1.0;
         log(res)
     }
     fn sample(&self, rng: &mut impl Rng) -> Option<S> {
@@ -118,13 +119,17 @@ impl<S: Symbol> Esitimator<S> {
 struct UpdateInfo {
     log_alpha: f64,
     log_1_min_alpha: f64,
+    esitimator_init: f64,
+    symbol_prior: f64,
 }
 
 impl UpdateInfo {
-    fn new(log_alpha: f64, log_1_min_alpha: f64) -> Self {
+    fn new<S: Symbol>(cts: &Cts<S>) -> Self {
         Self {
-            log_alpha,
-            log_1_min_alpha,
+            log_alpha: cts.log_alpha,
+            log_1_min_alpha: cts.log_1_min_alpha,
+            esitimator_init: f64::from(cts.symbol_size) * cts.symbol_prior,
+            symbol_prior: cts.symbol_prior,
         }
     }
 }
@@ -136,22 +141,22 @@ struct Node<S: Symbol> {
     estimator: Esitimator<S>,
 }
 
-impl<S: Symbol> Default for Node<S> {
-    fn default() -> Self {
+impl<S: Symbol> Node<S> {
+    fn new(esitimator_init: f64) -> Self {
         Node {
             children: HashMap::new(),
             log_stay_prob: log(PRIOR_STAY_PROB),
             log_split_prob: log(PRIOR_SPLIT_PROB),
-            estimator: Esitimator::<S>::default(),
+            estimator: Esitimator::new(esitimator_init),
         }
     }
-}
-
-impl<S: Symbol> Node<S> {
-    fn update(&mut self, context: &[S], symbol: S, info: UpdateInfo) -> f64 {
-        let lp_estimator = self.estimator.update(symbol);
+    fn update(&mut self, context: &[S], symbol: S, info: &UpdateInfo) -> f64 {
+        let lp_estimator = self.estimator.update(symbol, info);
         if let Some((last, rest)) = context.split_last() {
-            let child = self.children.entry(*last).or_insert_with(Node::default);
+            let child = self
+                .children
+                .entry(*last)
+                .or_insert_with(|| Node::new(info.esitimator_init));
             let lp_child = child.update(&rest, symbol, info);
             let lp_node = self.mix_prediction(lp_estimator, lp_child);
             self.update_weights(lp_estimator, lp_child, info);
@@ -169,7 +174,7 @@ impl<S: Symbol> Node<S> {
         let denominator = log_add(self.log_stay_prob, self.log_split_prob);
         numerator - denominator
     }
-    fn update_weights(&mut self, lp_estimator: f64, lp_child: f64, info: UpdateInfo) {
+    fn update_weights(&mut self, lp_estimator: f64, lp_child: f64, info: &UpdateInfo) {
         if info.log_1_min_alpha <= 0.0 {
             self.log_stay_prob += lp_estimator;
             self.log_split_prob += lp_child;
@@ -184,13 +189,13 @@ impl<S: Symbol> Node<S> {
             );
         }
     }
-    fn log_prob(&self, context: &[S], symbol: S) -> f64 {
-        let lp_estimator = log(self.estimator.prob(symbol));
-        if let Some((last, rest)) = context.split_last() {
+    fn log_prob(&self, context: &[S], symbol: S, info: &UpdateInfo) -> f64 {
+        let lp_estimator = log(self.estimator.prob(symbol, info));
+        if let Some((_last, rest)) = context.split_last() {
             let lp_child = self
                 .children
                 .get(&symbol)
-                .map(|c| c.log_prob(&rest, symbol))
+                .map(|c| c.log_prob(&rest, symbol, info))
                 .unwrap_or(0.0);
             self.mix_prediction(lp_estimator, lp_child)
         } else {
@@ -219,7 +224,7 @@ pub struct Cts<S: Symbol> {
     log_alpha: f64,
     log_1_min_alpha: f64,
     symbol_size: u32,
-    _symbol_prior: f64,
+    symbol_prior: f64,
     time: f64,
     root: Node<S>,
 }
@@ -229,15 +234,16 @@ impl<S: Symbol> Cts<S> {
 
     pub fn new(context_length: usize, max_symbol_size: u32, prior: &str) -> Result<Self, CtsError> {
         let prior = EsitimatorPrior::from_str(prior)?;
+        let symbol_prior = prior.calc_prior(max_symbol_size);
         Ok(Cts {
             observed_data: HashSet::new(),
             context_length,
             log_alpha: 0.0,
             log_1_min_alpha: 0.0,
             symbol_size: max_symbol_size,
-            _symbol_prior: prior.calc_prior(max_symbol_size),
+            symbol_prior,
             time: 0.0,
-            root: Node::default(),
+            root: Node::new(f64::from(max_symbol_size) * symbol_prior),
         })
     }
 
@@ -258,16 +264,11 @@ impl<S: Symbol> Cts<S> {
         if self.observed_data.len() > self.symbol_size as usize {
             return Err(CtsError::TooManySymbols);
         }
-
-        Ok(self.root.update(
-            context,
-            symbol,
-            UpdateInfo::new(self.log_alpha, self.log_1_min_alpha),
-        ))
+        Ok(self.root.update(context, symbol, &UpdateInfo::new(self)))
     }
     fn log_prob(&self, context: &[S], symbol: S) -> Result<f64, CtsError> {
         self.check_context(context)?;
-        Ok(self.root.log_prob(context, symbol))
+        Ok(self.root.log_prob(context, symbol, &UpdateInfo::new(self)))
     }
     pub fn sample(&self, context: &[S]) -> Result<S, CtsError> {
         if self.time == 0.0 {
@@ -286,6 +287,7 @@ impl<S: Symbol> Cts<S> {
 #[test]
 fn test_cts() {
     let mut cts = Cts::<u8>::new(5, 26, "perks").unwrap();
-    cts.update(&&b"abcde"[..], b'f').unwrap();
+    let log_p = cts.update(&&b"abcde"[..], b'f').unwrap();
+    assert!(!log_p.is_nan());
     assert_eq!(cts.sample(&&b"abcde"[..]).unwrap(), b'f');
 }

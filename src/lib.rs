@@ -14,7 +14,7 @@ pub struct SequencePredictor {
 
 #[pymethods]
 impl SequencePredictor {
-    #[new(initial_symbol = b'a')]
+    #[new]
     fn new(context_length: usize, symbol_size: u32, initial_symbol: u8) -> PyResult<Self> {
         let mut context = Vec::new();
         for _ in 0..context_length {
@@ -35,6 +35,16 @@ impl SequencePredictor {
         }
         self.context = self.context.split_off(text.len());
         Ok(log_prob)
+    }
+
+    fn sample(&mut self, n_samples: usize) -> PyResult<String> {
+        let ctx_len = self.context.len();
+        for i in 0..n_samples {
+            let sampled = convert_result(self.cts.sample(&self.context[i..]))?;
+            self.context.push(sampled);
+        }
+        let result = self.context.split_off(ctx_len);
+        String::from_utf8(result).map_err(Into::into)
     }
 }
 
