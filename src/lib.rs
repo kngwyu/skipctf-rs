@@ -37,3 +37,8 @@ impl SequencePredictor {
         Ok(log_prob)
     }
 }
+
+#[pymodule]
+fn skipcts(_py: Python, m: &PyModule) -> PyResult<()> {
+    m.add_class::<SequencePredictor>()
+}
